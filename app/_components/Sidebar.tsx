@@ -17,11 +17,14 @@ const NAV: Record<Role, NavItem[]> = {
     { label: 'Expenses',        href: '/owner#expenses',    icon: '💸' },
     { label: 'Rent Collection', href: '/owner#rent',        icon: '💰' },
     { label: 'Contractors',     href: '/owner#contractors', icon: '👷' },
+    { label: 'Rooms',           href: '/owner#rooms',       icon: '🚪' },
   ],
   manager: [
     { label: 'Overview',       href: '/manager',              icon: '🏢' },
     { label: 'Complaints',     href: '/manager#complaints',   icon: '📋' },
     { label: 'Announcements',  href: '/manager#announcements',icon: '📢' },
+    { label: 'Rooms',          href: '/manager#rooms',        icon: '🚪' },
+    { label: 'Tenants',        href: '/manager#tenants',      icon: '👥' },
   ],
   handyman: [
     { label: 'My Tasks',      href: '/handyman',            icon: '🛠️' },

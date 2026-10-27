@@ -240,3 +240,115 @@ drop policy if exists "ticket photos: delete own" on storage.objects;
 create policy "ticket photos: upload" on storage.objects for insert to authenticated with check (bucket_id = 'ticket-photos');
 create policy "ticket photos: update own" on storage.objects for update to authenticated using (bucket_id = 'ticket-photos' and owner_id = auth.uid()::text);
 create policy "ticket photos: delete own" on storage.objects for delete to authenticated using (bucket_id = 'ticket-photos' and owner_id = auth.uid()::text);
+
+-- ── Rooms & rental application tables ────────────────────────────────
+-- Run this block in Supabase SQL Editor to add room management features.
+
+create table if not exists public.rooms (
+  id           uuid primary key default gen_random_uuid(),
+  room_number  text not null unique,
+  floor        int,
+  type         text not null default 'Standard',
+  area_sqm     numeric(6,2),
+  monthly_rent numeric(12,2) not null check (monthly_rent >= 0),
+  status       text not null default 'available'
+                 check (status in ('available', 'occupied', 'maintenance')),
+  amenities    text,
+  description  text,
+  created_by   uuid references public.profiles(id) on delete set null,
+  created_at   timestamptz not null default timezone('utc', now()),
+  updated_at   timestamptz not null default timezone('utc', now())
+);
+
+create table if not exists public.room_applications (
+  id          uuid primary key default gen_random_uuid(),
+  room_id     uuid not null references public.rooms(id) on delete cascade,
+  tenant_id   uuid not null references public.profiles(id) on delete cascade,
+  status      text not null default 'pending'
+                check (status in ('pending', 'approved', 'rejected')),
+  message     text,
+  reviewed_by uuid references public.profiles(id) on delete set null,
+  reviewed_at timestamptz,
+  created_at  timestamptz not null default timezone('utc', now()),
+  updated_at  timestamptz not null default timezone('utc', now()),
+  unique (room_id, tenant_id)
+);
+
+-- Link tenant profile to their assigned room
+alter table public.profiles
+  add column if not exists room_id uuid references public.rooms(id) on delete set null;
+
+drop trigger if exists rooms_set_updated_at on public.rooms;
+create trigger rooms_set_updated_at before update on public.rooms
+  for each row execute function public.set_updated_at();
+
+drop trigger if exists room_applications_set_updated_at on public.room_applications;
+create trigger room_applications_set_updated_at before update on public.room_applications
+  for each row execute function public.set_updated_at();
+
+-- RLS
+alter table public.rooms              enable row level security;
+alter table public.room_applications  enable row level security;
+
+drop policy if exists "rooms: authenticated read"  on public.rooms;
+drop policy if exists "rooms: staff write"          on public.rooms;
+create policy "rooms: authenticated read"  on public.rooms for select to authenticated using (true);
+create policy "rooms: staff write"          on public.rooms for all    to authenticated
+  using  (public.current_user_role() in ('owner', 'manager'))
+  with check (public.current_user_role() in ('owner', 'manager'));
+
+drop policy if exists "room_applications: read"                on public.room_applications;
+drop policy if exists "room_applications: tenant insert"       on public.room_applications;
+drop policy if exists "room_applications: staff update"        on public.room_applications;
+drop policy if exists "room_applications: tenant delete own"   on public.room_applications;
+create policy "room_applications: read"
+  on public.room_applications for select to authenticated
+  using (tenant_id = auth.uid() or public.current_user_role() in ('owner', 'manager'));
+create policy "room_applications: tenant insert"
+  on public.room_applications for insert to authenticated
+  with check (tenant_id = auth.uid() and public.current_user_role() = 'tenant');
+create policy "room_applications: staff update"
+  on public.room_applications for update to authenticated
+  using  (public.current_user_role() in ('owner', 'manager'))
+  with check (public.current_user_role() in ('owner', 'manager'));
+create policy "room_applications: tenant delete own"
+  on public.room_applications for delete to authenticated
+  using (tenant_id = auth.uid() and status = 'pending');
+
+-- Atomic approve: updates application, room status, and tenant profile in one call.
+-- Call via supabase.rpc('approve_room_application', { app_id: '...' })
+create or replace function public.approve_room_application(app_id uuid)
+returns void language plpgsql security definer
+set search_path = public
+as $$
+declare
+  v_app  room_applications%rowtype;
+  v_room rooms%rowtype;
+begin
+  select * into v_app from room_applications where id = app_id;
+  if not found then raise exception 'Application not found'; end if;
+
+  select * into v_room from rooms where id = v_app.room_id;
+  if v_room.status <> 'available' then
+    raise exception 'Room % is not available', v_room.room_number;
+  end if;
+
+  update room_applications
+    set status = 'approved', reviewed_by = auth.uid(), reviewed_at = now()
+    where id = app_id;
+
+  -- Reject all other pending applications for the same room
+  update room_applications
+    set status = 'rejected', reviewed_by = auth.uid(), reviewed_at = now()
+    where room_id = v_app.room_id and id <> app_id and status = 'pending';
+
+  update rooms
+    set status = 'occupied'
+    where id = v_app.room_id;
+
+  update profiles
+    set room_id = v_app.room_id,
+        unit_number = v_room.room_number
+    where id = v_app.tenant_id;
+end;
+$$;

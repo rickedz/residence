@@ -9,8 +9,19 @@ import type {
   PaymentRecord,
 } from './types';
 
-const supabaseUrl  = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const supabaseKey  = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
+const supabaseUrl  = process.env.NEXT_PUBLIC_SUPABASE_URL  ?? '';
+const supabaseKey  = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? '';
+
+if (!supabaseUrl || !supabaseKey) {
+  // Only throw at runtime (in the browser or Node server), not during
+  // static analysis / edge compilation where env vars may not be present.
+  if (typeof window !== 'undefined' || process.env.NODE_ENV === 'production') {
+    throw new Error(
+      'Missing NEXT_PUBLIC_SUPABASE_URL or NEXT_PUBLIC_SUPABASE_ANON_KEY. ' +
+      'Add them to your .env.local file and restart the dev server.'
+    );
+  }
+}
 
 export const supabase = createClient(supabaseUrl, supabaseKey);
 
@@ -483,4 +494,151 @@ export async function fetchPaymentRecords(tenantId: string) {
     .order('due_date', { ascending: false });
   if (error) throw error;
   return data as PaymentRecordRow[];
+}
+
+export async function insertPaymentRecord(row: Omit<PaymentRecordRow, 'id' | 'created_at' | 'updated_at'>) {
+  const { data, error } = await supabase.from('payment_records').insert(row).select().single();
+  if (error) throw error;
+  return data as PaymentRecordRow;
+}
+
+// ── Rooms ─────────────────────────────────────────────────────────
+
+export interface RoomRow {
+  id:           string;
+  room_number:  string;
+  floor:        number | null;
+  type:         string;
+  area_sqm:     number | null;
+  monthly_rent: number;
+  status:       'available' | 'occupied' | 'maintenance';
+  amenities:    string | null;
+  description:  string | null;
+  created_by:   string | null;
+  created_at:   string;
+  updated_at:   string;
+}
+
+export async function fetchRooms(statusFilter?: RoomRow['status']) {
+  let query = supabase.from('rooms').select('*').order('room_number');
+  if (statusFilter) query = query.eq('status', statusFilter);
+  const { data, error } = await query;
+  if (error) throw error;
+  return data as RoomRow[];
+}
+
+export async function insertRoom(row: Omit<RoomRow, 'id' | 'created_at' | 'updated_at'>) {
+  const { data, error } = await supabase.from('rooms').insert(row).select().single();
+  if (error) throw error;
+  return data as RoomRow;
+}
+
+export async function updateRoom(id: string, patch: Partial<Omit<RoomRow, 'id' | 'created_at' | 'updated_at'>>) {
+  const { data, error } = await supabase.from('rooms').update(patch).eq('id', id).select().single();
+  if (error) throw error;
+  return data as RoomRow;
+}
+
+// ── Room applications ─────────────────────────────────────────────
+
+export interface RoomApplicationRow {
+  id:          string;
+  room_id:     string;
+  tenant_id:   string;
+  status:      'pending' | 'approved' | 'rejected';
+  message:     string | null;
+  reviewed_by: string | null;
+  reviewed_at: string | null;
+  created_at:  string;
+  updated_at:  string;
+}
+
+/** Fetch applications. Pass tenantId to scope to a tenant; omit for all (manager/owner). */
+export async function fetchRoomApplications(tenantId?: string) {
+  let query = supabase
+    .from('room_applications')
+    .select('*, rooms(*), profiles!room_applications_tenant_id_fkey(id,name,unit_number,avatar)')
+    .order('created_at', { ascending: false });
+  if (tenantId) query = query.eq('tenant_id', tenantId);
+  const { data, error } = await query;
+  if (error) throw error;
+  return data as (RoomApplicationRow & { rooms: RoomRow; profiles: ProfileRow })[];
+}
+
+export async function insertRoomApplication(roomId: string, tenantId: string, message?: string) {
+  const { data, error } = await supabase
+    .from('room_applications')
+    .insert({ room_id: roomId, tenant_id: tenantId, message: message ?? null })
+    .select()
+    .single();
+  if (error) throw error;
+  return data as RoomApplicationRow;
+}
+
+/** Approve via the server-side RPC function (SECURITY DEFINER — handles room + profile update). */
+export async function approveRoomApplication(appId: string) {
+  const { error } = await supabase.rpc('approve_room_application', { app_id: appId });
+  if (error) throw error;
+}
+
+export async function rejectRoomApplication(appId: string) {
+  const { error } = await supabase
+    .from('room_applications')
+    .update({ status: 'rejected', reviewed_at: new Date().toISOString() })
+    .eq('id', appId);
+  if (error) throw error;
+}
+
+// ── Tenant management ─────────────────────────────────────────────
+
+export interface TenantSummaryRow {
+  id:              string;
+  name:            string;
+  unit_number:     string | null;
+  room_id:         string | null;
+  avatar:          string | null;
+  payment_status:  'paid' | 'pending' | 'overdue' | null;
+  payment_amount:  number | null;
+  payment_due:     string | null;
+}
+
+/** Fetch all tenant profiles with their current-month payment status. */
+export async function fetchTenants(): Promise<TenantSummaryRow[]> {
+  const { data: profiles, error: profilesError } = await supabase
+    .from('profiles')
+    .select('id, name, unit_number, room_id, avatar')
+    .eq('role', 'tenant')
+    .order('name');
+  if (profilesError) throw profilesError;
+
+  if (!profiles || profiles.length === 0) return [];
+
+  const now        = new Date();
+  const monthStart = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
+
+  const { data: payments, error: paymentsError } = await supabase
+    .from('payment_records')
+    .select('tenant_id, status, amount, due_date')
+    .in('tenant_id', profiles.map(p => p.id))
+    .eq('month', monthStart);
+  if (paymentsError) throw paymentsError;
+
+  const payMap = new Map<string, { status: string; amount: number; due_date: string }>();
+  for (const pay of payments ?? []) {
+    payMap.set(pay.tenant_id, pay);
+  }
+
+  return profiles.map(p => {
+    const pay = payMap.get(p.id);
+    return {
+      id:             p.id,
+      name:           p.name,
+      unit_number:    p.unit_number,
+      room_id:        p.room_id,
+      avatar:         p.avatar,
+      payment_status: (pay?.status as TenantSummaryRow['payment_status']) ?? null,
+      payment_amount: pay?.amount ?? null,
+      payment_due:    pay?.due_date ?? null,
+    };
+  });
 }

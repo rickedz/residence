@@ -15,9 +15,15 @@ import {
   fetchTicketUpdates,
   insertTicket,
   insertTicketUpdate,
+  fetchRooms,
+  fetchRoomApplications,
+  insertRoomApplication,
   type PaymentRecordRow,
   type TicketRow,
   type TicketUpdateRow,
+  type RoomRow,
+  type RoomApplicationRow,
+  type ProfileRow,
 } from '../../_lib/supabase';
 import type { TicketStatus, Priority } from '../../_lib/types';
 
@@ -307,26 +313,115 @@ function RepairCard({ t }: { t: TicketWithUpdates }) {
   );
 }
 
+// ── Apply for Room modal ────────────────────────────────────────────
+function ApplyRoomModal({ room, tenantId, onClose, onApplied }: {
+  room: RoomRow;
+  tenantId: string;
+  onClose: () => void;
+  onApplied: (app: RoomApplicationRow) => void;
+}) {
+  const [message, setMessage] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error,   setError]   = useState('');
+  const [success, setSuccess] = useState(false);
+
+  async function handleApply() {
+    setLoading(true); setError('');
+    try {
+      const app = await insertRoomApplication(room.id, tenantId, message.trim() || undefined);
+      onApplied(app);
+      setSuccess(true);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Failed to apply.';
+      setError(msg.toLowerCase().includes('duplicate') || msg.toLowerCase().includes('unique')
+        ? 'You already have an application for this room.'
+        : msg);
+    } finally { setLoading(false); }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
+      <div className="w-full max-w-sm rounded-2xl bg-white shadow-xl overflow-hidden">
+        {success ? (
+          <div className="p-8 text-center">
+            <div className="text-5xl mb-3">📬</div>
+            <h3 className="text-xl font-bold text-zinc-900">Application Sent!</h3>
+            <p className="mt-2 text-sm text-zinc-500">
+              Your application for <span className="font-semibold">Room {room.room_number}</span> has been submitted.
+              The property manager will review it shortly.
+            </p>
+            <button onClick={onClose}
+              className="mt-5 w-full rounded-xl bg-violet-600 py-2.5 text-sm font-bold text-white hover:bg-violet-700 transition-colors">
+              Done
+            </button>
+          </div>
+        ) : (
+          <>
+            {/* Room summary */}
+            <div className="bg-zinc-900 px-6 py-5 text-white">
+              <p className="text-xs font-semibold text-zinc-400 uppercase tracking-widest">Apply for Room</p>
+              <h3 className="mt-1 text-2xl font-black">Room {room.room_number}</h3>
+              <p className="mt-0.5 text-sm text-zinc-300">{room.type} · {room.floor ? `Floor ${room.floor}` : ''} · {fmt(room.monthly_rent)}/mo</p>
+            </div>
+            <div className="px-6 py-5 space-y-4">
+              <div>
+                <label className="text-xs font-semibold text-zinc-600 mb-1 block">Message to manager <span className="text-zinc-400 font-normal">(optional)</span></label>
+                <textarea rows={3} placeholder="Introduce yourself or ask a question…" value={message}
+                  onChange={e => { setMessage(e.target.value); setError(''); }}
+                  className="w-full rounded-xl border border-zinc-200 px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-violet-400 resize-none" />
+              </div>
+              {error && (
+                <div className="flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 px-3 py-2.5">
+                  <span className="text-red-500 mt-0.5 shrink-0">⚠</span>
+                  <p className="text-xs text-red-700">{error}</p>
+                </div>
+              )}
+            </div>
+            <div className="flex gap-3 px-6 pb-6">
+              <button onClick={onClose}
+                className="flex-1 rounded-xl border-2 border-zinc-200 py-2.5 text-sm font-semibold text-zinc-600 hover:bg-zinc-50 transition-colors">
+                Cancel
+              </button>
+              <button onClick={handleApply} disabled={loading}
+                className="flex-1 rounded-xl bg-violet-600 py-2.5 text-sm font-bold text-white hover:bg-violet-700 transition-all disabled:opacity-60">
+                {loading
+                  ? <span className="flex items-center justify-center gap-2"><span className="h-4 w-4 rounded-full border-2 border-white/30 border-t-white animate-spin" />Applying…</span>
+                  : 'Submit Application'}
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── Main page ───────────────────────────────────────────────────────
 export default function TenantPage() {
   const { profile, loading: sessionLoading } = useSession();
   const router = useRouter();
 
-  const [activeTab, setActiveTab]           = useState<'overview' | 'pay' | 'submit' | 'track'>('overview');
-  const [showPayModal, setShowPayModal]     = useState(false);
+  const [activeTab, setActiveTab]             = useState<'overview' | 'pay' | 'submit' | 'track' | 'rooms'>('overview');
+  const [showPayModal, setShowPayModal]       = useState(false);
   const [showSubmitModal, setShowSubmitModal] = useState(false);
+  const [applyingRoom, setApplyingRoom]       = useState<RoomRow | null>(null);
 
   // Real data state
-  const [payments, setPayments]   = useState<PaymentRecordRow[]>([]);
-  const [tickets, setTickets]     = useState<TicketWithUpdates[]>([]);
-  const [dataLoading, setDataLoading] = useState(true);
+  const [payments,      setPayments]      = useState<PaymentRecordRow[]>([]);
+  const [tickets,       setTickets]       = useState<TicketWithUpdates[]>([]);
+  const [rooms,         setRooms]         = useState<RoomRow[]>([]);
+  const [myApps,        setMyApps]        = useState<(RoomApplicationRow & { rooms: RoomRow; profiles: ProfileRow })[]>([]);
+  const [dataLoading,   setDataLoading]   = useState(true);
 
   useEffect(() => {
     const syncActiveTab = () => {
       const tab = window.location.hash.slice(1);
-      setActiveTab(tab === 'pay' || tab === 'submit' || tab === 'track' ? tab : 'overview');
+      if (tab === 'pay')         setActiveTab('pay');
+      else if (tab === 'submit') setActiveTab('submit');
+      else if (tab === 'track')  setActiveTab('track');
+      else if (tab === 'rooms')  setActiveTab('rooms');
+      else                       setActiveTab('overview');
     };
-
     syncActiveTab();
     window.addEventListener('hashchange', syncActiveTab);
     return () => window.removeEventListener('hashchange', syncActiveTab);

@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import Sidebar from '../../_components/Sidebar';
 import Badge from '../../_components/Badge';
 import { useSession } from '../../_lib/useSession';
-import { supabase, fetchExpenses, fetchRentRecords, fetchContractors, insertExpense, insertContractor, updateContractorHired, type ExpenseRow, type RentRecordRow, type ContractorRow } from '../../_lib/supabase';
+import { supabase, fetchExpenses, fetchRentRecords, fetchContractors, insertExpense, insertContractor, updateContractorHired, fetchRooms, insertRoom, updateRoom, type ExpenseRow, type RentRecordRow, type ContractorRow, type RoomRow } from '../../_lib/supabase';
 
 function fmt(n: number) { return '₱' + n.toLocaleString('en-PH'); }
 
@@ -342,6 +342,193 @@ function AddContractorModal({ onClose, onSaved }: {
   );
 }
 
+// ── Add Room Modal ───────────────────────────────────────────────────
+const ROOM_TYPES = ['Studio', '1BR', '2BR', '3BR', 'Suite', 'Standard'];
+
+function AddRoomModal({ profileId, editRoom, onClose, onSaved }: {
+  profileId: string;
+  editRoom?: RoomRow;
+  onClose: () => void;
+  onSaved: (row: RoomRow) => void;
+}) {
+  const isEdit = !!editRoom;
+  const [form, setForm] = useState({
+    room_number:  editRoom?.room_number  ?? '',
+    floor:        editRoom?.floor?.toString() ?? '',
+    type:         editRoom?.type         ?? 'Standard',
+    area_sqm:     editRoom?.area_sqm?.toString() ?? '',
+    monthly_rent: editRoom?.monthly_rent?.toString() ?? '',
+    status:       (editRoom?.status      ?? 'available') as RoomRow['status'],
+    amenities:    editRoom?.amenities    ?? '',
+    description:  editRoom?.description  ?? '',
+  });
+  const [loading, setLoading] = useState(false);
+  const [error,   setError]   = useState('');
+
+  async function handleSave() {
+    if (!form.room_number.trim())  { setError('Room number is required.'); return; }
+    const rent = parseFloat(form.monthly_rent);
+    if (isNaN(rent) || rent < 0)   { setError('Enter a valid monthly rent.'); return; }
+    setLoading(true);
+    try {
+      const payload = {
+        room_number:  form.room_number.trim(),
+        floor:        form.floor ? parseInt(form.floor) : null,
+        type:         form.type,
+        area_sqm:     form.area_sqm ? parseFloat(form.area_sqm) : null,
+        monthly_rent: rent,
+        status:       form.status,
+        amenities:    form.amenities.trim() || null,
+        description:  form.description.trim() || null,
+        created_by:   profileId,
+      };
+      const row = isEdit
+        ? await updateRoom(editRoom!.id, payload)
+        : await insertRoom(payload);
+      onSaved(row);
+      onClose();
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to save room.');
+      setLoading(false);
+    }
+  }
+
+  const inp = 'w-full rounded-xl border border-zinc-200 px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-violet-400';
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 overflow-y-auto">
+      <div className="w-full max-w-lg rounded-2xl bg-white shadow-2xl overflow-hidden my-4">
+        <div className="flex items-center justify-between px-6 py-5 border-b border-zinc-100">
+          <h3 className="font-bold text-zinc-900 text-lg">{isEdit ? 'Edit Room' : 'Add Room'}</h3>
+          <button onClick={onClose} className="h-8 w-8 flex items-center justify-center rounded-lg text-zinc-400 hover:bg-zinc-100 transition-colors text-lg">✕</button>
+        </div>
+        <div className="px-6 py-5 space-y-4">
+          <div className="grid grid-cols-3 gap-3">
+            <div>
+              <label className="text-xs font-semibold text-zinc-500 mb-1 block uppercase tracking-wide">Room No. *</label>
+              <input type="text" placeholder="e.g. 3B" value={form.room_number}
+                onChange={e => { setForm(f => ({ ...f, room_number: e.target.value })); setError(''); }}
+                className={inp} />
+            </div>
+            <div>
+              <label className="text-xs font-semibold text-zinc-500 mb-1 block uppercase tracking-wide">Floor</label>
+              <input type="number" min="1" placeholder="1" value={form.floor}
+                onChange={e => setForm(f => ({ ...f, floor: e.target.value }))}
+                className={inp} />
+            </div>
+            <div>
+              <label className="text-xs font-semibold text-zinc-500 mb-1 block uppercase tracking-wide">Type</label>
+              <select value={form.type} onChange={e => setForm(f => ({ ...f, type: e.target.value }))} className={inp}>
+                {ROOM_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+              </select>
+            </div>
+          </div>
+          <div className="grid grid-cols-3 gap-3">
+            <div>
+              <label className="text-xs font-semibold text-zinc-500 mb-1 block uppercase tracking-wide">Area (sqm)</label>
+              <input type="number" min="0" step="0.01" placeholder="25.00" value={form.area_sqm}
+                onChange={e => setForm(f => ({ ...f, area_sqm: e.target.value }))}
+                className={inp} />
+            </div>
+            <div>
+              <label className="text-xs font-semibold text-zinc-500 mb-1 block uppercase tracking-wide">Monthly Rent *</label>
+              <input type="number" min="0" step="0.01" placeholder="18000" value={form.monthly_rent}
+                onChange={e => { setForm(f => ({ ...f, monthly_rent: e.target.value })); setError(''); }}
+                className={inp} />
+            </div>
+            <div>
+              <label className="text-xs font-semibold text-zinc-500 mb-1 block uppercase tracking-wide">Status</label>
+              <select value={form.status} onChange={e => setForm(f => ({ ...f, status: e.target.value as RoomRow['status'] }))} className={inp}>
+                <option value="available">Available</option>
+                <option value="occupied">Occupied</option>
+                <option value="maintenance">Maintenance</option>
+              </select>
+            </div>
+          </div>
+          <div>
+            <label className="text-xs font-semibold text-zinc-500 mb-1 block uppercase tracking-wide">Amenities</label>
+            <input type="text" placeholder="e.g. AC, WiFi, Furnished" value={form.amenities}
+              onChange={e => setForm(f => ({ ...f, amenities: e.target.value }))}
+              className={inp} />
+          </div>
+          <div>
+            <label className="text-xs font-semibold text-zinc-500 mb-1 block uppercase tracking-wide">Description</label>
+            <textarea rows={2} placeholder="Brief description of the room…" value={form.description}
+              onChange={e => setForm(f => ({ ...f, description: e.target.value }))}
+              className={inp + ' resize-none'} />
+          </div>
+          {error && <div className="flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 px-3 py-2.5"><span className="text-red-500">⚠</span><p className="text-xs text-red-700">{error}</p></div>}
+        </div>
+        <div className="flex gap-3 px-6 pb-6">
+          <button onClick={onClose} className="flex-1 rounded-xl border-2 border-zinc-200 py-2.5 text-sm font-semibold text-zinc-600 hover:bg-zinc-50 transition-colors">Cancel</button>
+          <button onClick={handleSave} disabled={loading}
+            className="flex-1 rounded-xl bg-violet-600 py-2.5 text-sm font-semibold text-white hover:bg-violet-700 transition-all disabled:opacity-60">
+            {loading ? <span className="flex items-center justify-center gap-2"><span className="h-4 w-4 rounded-full border-2 border-white/30 border-t-white animate-spin" />Saving…</span> : isEdit ? 'Save Changes' : 'Add Room'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Room status badge ─────────────────────────────────────────────────
+const ROOM_STATUS_STYLE: Record<RoomRow['status'], string> = {
+  available:   'bg-emerald-50 text-emerald-700 border-emerald-200',
+  occupied:    'bg-blue-50 text-blue-700 border-blue-200',
+  maintenance: 'bg-amber-50 text-amber-700 border-amber-200',
+};
+const ROOM_STATUS_ICON: Record<RoomRow['status'], string> = {
+  available: '🟢', occupied: '🔵', maintenance: '🟡',
+};
+
+function RoomCard({ room, onEdit, onStatusChange }: {
+  room: RoomRow;
+  onEdit: (room: RoomRow) => void;
+  onStatusChange: (id: string, status: RoomRow['status']) => void;
+}) {
+  const nextStatus: Partial<Record<RoomRow['status'], RoomRow['status']>> = {
+    available: 'maintenance',
+    maintenance: 'available',
+  };
+  return (
+    <div className="group rounded-2xl border border-zinc-100 bg-white p-5 flex flex-col gap-3 hover:border-violet-200 hover:shadow-md transition-all">
+      <div className="flex items-start justify-between gap-2">
+        <div>
+          <div className="flex items-center gap-2">
+            <span className="text-lg font-black text-zinc-900">Room {room.room_number}</span>
+            {room.floor && <span className="text-xs text-zinc-400">Floor {room.floor}</span>}
+          </div>
+          <span className="text-xs font-semibold text-zinc-500">{room.type}</span>
+        </div>
+        <span className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs font-semibold capitalize ${ROOM_STATUS_STYLE[room.status]}`}>
+          {ROOM_STATUS_ICON[room.status]} {room.status}
+        </span>
+      </div>
+
+      <div className="text-2xl font-black text-zinc-900">{fmt(room.monthly_rent)}<span className="text-xs font-medium text-zinc-400">/mo</span></div>
+
+      <div className="space-y-1 text-xs text-zinc-500">
+        {room.area_sqm  && <p>📐 {room.area_sqm} sqm</p>}
+        {room.amenities && <p>✨ {room.amenities}</p>}
+        {room.description && <p className="text-zinc-400 line-clamp-2">{room.description}</p>}
+      </div>
+
+      <div className="flex gap-2 mt-1 pt-3 border-t border-zinc-50">
+        <button onClick={() => onEdit(room)}
+          className="flex-1 rounded-xl border border-zinc-200 py-1.5 text-xs font-semibold text-zinc-600 hover:bg-zinc-50 transition-colors">
+          ✏️ Edit
+        </button>
+        {room.status !== 'occupied' && nextStatus[room.status] && (
+          <button onClick={() => onStatusChange(room.id, nextStatus[room.status]!)}
+            className="flex-1 rounded-xl bg-zinc-900 text-white text-xs font-semibold py-1.5 hover:bg-zinc-700 transition-colors">
+            {room.status === 'available' ? '🔧 Set Maintenance' : '✅ Set Available'}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── Row / Card components ────────────────────────────────────────────
 const CATEGORY_ICON: Record<string, string> = { Structural: '🏗️', Electrical: '⚡', Plumbing: '🔧', Landscaping: '🌿', Security: '🔒', Elevator: '🛗' };
 
@@ -412,23 +599,28 @@ function ContractorCard({ c, onHire }: { c: ContractorRow; onHire: (id: string) 
 export default function OwnerPage() {
   const { profile, loading: sessionLoading } = useSession();
   const router = useRouter();
-  const [activeTab, setActiveTab]   = useState<'expenses' | 'rent' | 'contractors'>('expenses');
-  const [showAddUser, setShowAddUser]       = useState(false);
-  const [showAddExpense, setShowAddExpense] = useState(false);
+  const [activeTab, setActiveTab]   = useState<'expenses' | 'rent' | 'contractors' | 'rooms'>('expenses');
+  const [showAddUser, setShowAddUser]             = useState(false);
+  const [showAddExpense, setShowAddExpense]       = useState(false);
   const [showAddContractor, setShowAddContractor] = useState(false);
-  const [hireToast, setHireToast]           = useState('');
+  const [showRoomModal, setShowRoomModal]         = useState(false);
+  const [editingRoom, setEditingRoom]             = useState<RoomRow | undefined>();
+  const [hireToast, setHireToast]                 = useState('');
 
   const [expenses,    setExpenses]    = useState<ExpenseRow[]>([]);
   const [rentRecords, setRentRecords] = useState<RentRecordRow[]>([]);
   const [contractors, setContractors] = useState<ContractorRow[]>([]);
+  const [rooms,       setRooms]       = useState<RoomRow[]>([]);
   const [dataLoading, setDataLoading] = useState(true);
 
   useEffect(() => {
     const syncActiveTab = () => {
       const tab = window.location.hash.slice(1);
-      setActiveTab(tab === 'rent' || tab === 'contractors' ? tab : 'expenses');
+      if (tab === 'rent')        setActiveTab('rent');
+      else if (tab === 'contractors') setActiveTab('contractors');
+      else if (tab === 'rooms')  setActiveTab('rooms');
+      else                       setActiveTab('expenses');
     };
-
     syncActiveTab();
     window.addEventListener('hashchange', syncActiveTab);
     return () => window.removeEventListener('hashchange', syncActiveTab);
@@ -443,8 +635,8 @@ export default function OwnerPage() {
     async function load() {
       setDataLoading(true);
       try {
-        const [exp, rent, cont] = await Promise.all([fetchExpenses(), fetchRentRecords(), fetchContractors()]);
-        setExpenses(exp); setRentRecords(rent); setContractors(cont);
+        const [exp, rent, cont, rms] = await Promise.all([fetchExpenses(), fetchRentRecords(), fetchContractors(), fetchRooms()]);
+        setExpenses(exp); setRentRecords(rent); setContractors(cont); setRooms(rms);
       } catch (err) { console.error('Failed to load owner data:', err); }
       finally { setDataLoading(false); }
     }
@@ -477,7 +669,16 @@ export default function OwnerPage() {
     }
   }
 
+  async function handleRoomStatusChange(id: string, status: RoomRow['status']) {
+    try {
+      const updated = await updateRoom(id, { status });
+      setRooms(prev => prev.map(r => r.id === id ? updated : r));
+    } catch (err) { console.error('Failed to update room status:', err); }
+  }
+
   // Metrics
+  const availableRooms  = rooms.filter(r => r.status === 'available').length;
+  const occupiedRooms   = rooms.filter(r => r.status === 'occupied').length;
   const totalExpenses   = expenses.reduce((s, e) => s + e.amount, 0);
   const paidExpenses    = expenses.filter(e => e.status === 'paid').reduce((s, e) => s + e.amount, 0);
   const pendingExpenses = expenses.filter(e => e.status === 'pending' || e.status === 'overdue').reduce((s, e) => s + e.amount, 0);
@@ -494,6 +695,7 @@ export default function OwnerPage() {
     { id: 'expenses'    as const, label: 'Expenses',        icon: '💸', count: expenses.length },
     { id: 'rent'        as const, label: 'Rent Collection', icon: '💰', count: rentRecords.length > 0 ? `${paidRentCount}/${rentRecords.length}` : 0 },
     { id: 'contractors' as const, label: 'Contractors',     icon: '👷', count: activeContractors },
+    { id: 'rooms'       as const, label: 'Rooms',           icon: '🏠', count: rooms.length },
   ];
 
   return (
@@ -507,8 +709,21 @@ export default function OwnerPage() {
         <AddContractorModal onClose={() => setShowAddContractor(false)}
           onSaved={row => setContractors(prev => [row, ...prev])} />
       )}
+      {showRoomModal && (
+        <AddRoomModal
+          profileId={profile.id}
+          editRoom={editingRoom}
+          onClose={() => { setShowRoomModal(false); setEditingRoom(undefined); }}
+          onSaved={row => {
+            setRooms(prev => {
+              const idx = prev.findIndex(r => r.id === row.id);
+              return idx >= 0 ? prev.map(r => r.id === row.id ? row : r) : [row, ...prev];
+            });
+          }}
+        />
+      )}
       {hireToast && (
-        <div className="fixed bottom-6 right-6 z-50 rounded-xl bg-emerald-600 text-white text-sm font-semibold px-5 py-3 shadow-lg animate-in fade-in slide-in-from-bottom-2">
+        <div className="fixed bottom-6 right-6 z-50 rounded-xl bg-emerald-600 text-white text-sm font-semibold px-5 py-3 shadow-lg">
           ✅ {hireToast}
         </div>
       )}
@@ -667,6 +882,38 @@ export default function OwnerPage() {
                   ) : (
                     <div className="p-5 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
                       {contractors.map(c => <ContractorCard key={c.id} c={c} onHire={handleHire} />)}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Rooms tab */}
+              {activeTab === 'rooms' && (
+                <div className="rounded-2xl border border-zinc-200 bg-white shadow-sm overflow-hidden">
+                  <div className="flex items-center justify-between px-6 py-4 border-b border-zinc-100">
+                    <div>
+                      <h2 className="font-bold text-zinc-900">Room Directory</h2>
+                      <p className="text-xs text-zinc-400 mt-0.5">
+                        {rooms.length > 0
+                          ? `${availableRooms} available · ${occupiedRooms} occupied · ${rooms.length - availableRooms - occupiedRooms} maintenance`
+                          : 'No rooms added yet'}
+                      </p>
+                    </div>
+                    <button onClick={() => { setEditingRoom(undefined); setShowRoomModal(true); }}
+                      className="flex items-center gap-1.5 rounded-xl bg-violet-600 text-white text-xs font-bold px-3 py-2 hover:bg-violet-700 transition-colors">
+                      <span>＋</span> Add Room
+                    </button>
+                  </div>
+                  {rooms.length === 0 ? (
+                    <EmptyState icon="🏠" title="No rooms yet"
+                      sub="Add rooms to let tenants browse and apply for available units." />
+                  ) : (
+                    <div className="p-5 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                      {rooms.map(room => (
+                        <RoomCard key={room.id} room={room}
+                          onEdit={r => { setEditingRoom(r); setShowRoomModal(true); }}
+                          onStatusChange={handleRoomStatusChange} />
+                      ))}
                     </div>
                   )}
                 </div>
