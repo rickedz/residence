@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { useState, Suspense, useRef, useEffect } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { signInAndSendOtp, verifyOtpAndGetProfile } from '../_lib/supabase';
@@ -342,7 +343,11 @@ function LoginContent() {
 
       {/* Footer */}
       <div className="border-t border-zinc-100 bg-zinc-50 px-7 py-4 text-center text-xs leading-relaxed text-zinc-500">
-        No account yet? Ask your property owner or landlord to add you to ResideHub.
+        New tenant?{' '}
+        <Link href="/signup" className="font-semibold text-violet-600 hover:text-violet-700 underline underline-offset-2">
+          Create an account
+        </Link>
+        {' '}· Managers & staff: ask your owner to add you.
       </div>
     </div>
   );
